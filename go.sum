@@ -1,0 +1,4 @@
+github.com/as/hls v0.3.3 h1:cI5ROsXkeGp/7F/9y5t63umuIO3VSWx7cNbqjMH1c84=
+github.com/as/hls v0.3.3/go.mod h1:GbKsPacEZVr3fsQHfVe64bPKpDARoyIIXg40+abIBQM=
+github.com/as/scte v0.0.2 h1:flRMSIBSbFczBwI+XnQprCQ6SFiPe0NYJC8zwxUhwNI=
+github.com/as/scte v0.0.2/go.mod h1:9YNHCb/MraFhqsQ5krFSjA5WJe9xFuZQNm4gByT5NwE=

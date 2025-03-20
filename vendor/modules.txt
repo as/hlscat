@@ -1,0 +1,6 @@
+# github.com/as/hls v0.3.3
+## explicit; go 1.18
+github.com/as/hls
+github.com/as/hls/m3u
+# github.com/as/scte v0.0.2
+## explicit; go 1.22.4
