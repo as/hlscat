@@ -29,6 +29,7 @@ const Blocksize = 16
 
 var (
 	verbose = flag.Bool("v", false, "verbose output")
+	noads   = flag.Bool("noads", false, "trim away all ad breaks")
 	base    string
 )
 
@@ -65,6 +66,10 @@ func main() {
 	init := ""
 	for i := range m.File {
 		f := &m.File[i]
+		if *noads && f.IsAD() {
+			fmt.Fprintf(os.Stderr, "skipping ad break: %s\n", f.Inf.URL)
+			continue
+		}
 		if k := f.Key.URI; k != "" && k != keyfile {
 			// download the key but only if its unique
 			keyfile = k
