@@ -6,8 +6,6 @@ vlc segment.ts
 
 go run hlscat.go http://example.com/manifest.m3u8 > segment.ts
 vlc segment.ts
-
-ffmpeg -i - -c copy -fflags +shortest+genpts -max_interleave_delta 0 -flush_packets 0 -f mpegts test5.ts
 */
 package main
 
@@ -33,15 +31,16 @@ import (
 const Blocksize = 16
 
 var (
-	verbose = flag.Bool("v", false, "verbose output")
-	noads   = flag.Bool("noads", false, "trim away all ad breaks")
-	maxhttp = flag.Int("maxhttp", 256, "max http conns")
-	maxbuf  = flag.Int("maxbuf", 64*1024*1024, "max buffer size")
-	skip    = flag.Int("skip", 0, "debugging: skip this amount of segments (after any filters are applied)")
-	count   = flag.Int("count", 0, "debugging: limit the number of segments processed")
-	debug   = flag.Int("debug", 0, "debug level")
+	verbose  = flag.Bool("v", false, "verbose output")
+	noads    = flag.Bool("noads", false, "trim away all ad breaks")
+	maxhttp  = flag.Int("maxhttp", 128, "max http conns")
+	maxbuf   = flag.Int("maxbuf", 128*1024, "max buffer size")
+	skip     = flag.Int("skip", 0, "debugging: skip this amount of segments (after any filters are applied)")
+	count    = flag.Int("count", 0, "debugging: limit the number of segments processed")
+	debug    = flag.Int("debug", 0, "debug level")
 	noinit   = flag.Bool("noinit", false, "skip init atoms")
-	nodec   = flag.Bool("nodec", false, "never decrypt anything")
+	nodec    = flag.Bool("nodec", false, "never decrypt anything")
+	nofilter = flag.Bool("nofilter", false, "never fix ts segments")
 
 	recurse = flag.Bool("r", false, "recurse into media manifests if target is a master")
 	ls      = flag.Bool("ls", false, "list segments found in manifests")
@@ -115,9 +114,9 @@ func master(m *hls.Master) {
 	}
 }
 
-	type Pathy interface {
-		Path(string) string
-	}
+type Pathy interface {
+	Path(string) string
+}
 
 func listmaster(m *hls.Master, dst io.Writer) (err error) {
 	link := m.Path("")
@@ -184,7 +183,7 @@ func list(m *hls.Media, dst io.Writer) (err error) {
 	init := ""
 	for i := range m.File {
 		f := &m.File[i]
-		if newinit := f.Map.URI; newinit != "" && newinit != init && !*noinit{
+		if newinit := f.Map.URI; newinit != "" && newinit != init && !*noinit {
 			fmt.Fprintf(dst, "%s\n", printlocation(f.Map.URI))
 			init = newinit
 		}
@@ -198,7 +197,7 @@ func stat(m *hls.Media, dst io.Writer) (err error) {
 	t := time.Duration(0)
 	for i := range m.File {
 		f := &m.File[i]
-		if newinit := f.Map.URI; newinit != "" && newinit != init && !*noinit{
+		if newinit := f.Map.URI; newinit != "" && newinit != init && !*noinit {
 			fmt.Fprintf(dst, "%s\n", printlocation(f.Map.URI))
 			init = newinit
 		}
@@ -230,7 +229,7 @@ func cat(m *hls.Media, dst io.Writer) (err error) {
 				key = string(download(f.Key.Path(m.Path(""))))
 			}
 			iv = f.Key.IV
-			if newinit := f.Init(nil).String(); newinit != "" && newinit != init && !*noinit{
+			if newinit := f.Map.Path(m.Path("")); newinit != "" && newinit != init && !*noinit {
 				fmt.Fprintf(os.Stderr, "streaming init segment: %s\n", newinit)
 				if key == "" {
 					outc <- stream(newinit)
@@ -240,8 +239,8 @@ func cat(m *hls.Media, dst io.Writer) (err error) {
 				init = newinit
 			}
 			if key != "" {
-				if *debug > 1{
-				fmt.Fprintf(os.Stderr, "keyfil=%q key=%x iv=%q iv=%x\n", f.Key.Path(m.Path("")), key, iv, unhex(iv))
+				if *debug > 1 {
+					fmt.Fprintf(os.Stderr, "keyfil=%q key=%x iv=%q iv=%x\n", f.Key.Path(m.Path("")), key, iv, unhex(iv))
 				}
 				outc <- decrypt(key, iv, stream(f.Inf.URL))
 			} else {
@@ -251,27 +250,31 @@ func cat(m *hls.Media, dst io.Writer) (err error) {
 	}()
 
 	pr, pw := io.Pipe()
-	go func(){
+	go func() {
 		defer pw.Close()
-	for out := range outc {
-		_, err := io.Copy(pw, out)
-		if err != nil {
-			panic(err)
+		for out := range outc {
+			_, err := io.Copy(pw, out)
+			if err != nil {
+				panic(err)
+			}
+			out.Close()
 		}
-		out.Close()
-	}
 	}()
 	io.Copy(dst, filterTS(io.NopCloser(bufio.NewReaderSize(pr, *maxbuf))))
-//	io.Copy(dst, filterTS(pr))
+	//	io.Copy(dst, filterTS(pr))
 	return
 }
 
 func filterTS(r io.ReadCloser) io.ReadCloser {
-	return r
-	s := strings.Split("ffmpeg -i - -c copy -fflags +shortest+genpts -max_interleave_delta 0 -flush_packets 0 -f mpegts -", " ")
+	if *nofilter {
+		return r
+	}
+	s := strings.Split("ffmpeg -hide_banner -thread_queue_size 2048 -i - -c copy -fflags +shortest+genpts -max_interleave_delta 0 -flush_packets 0 -f mpegts -", " ")
 	cmd := exec.Command(s[0], s[1:]...)
 	cmd.Stdin = r
-	cmd.Stderr = os.Stderr
+	if *debug > 3 {
+		cmd.Stderr = os.Stderr
+	}
 	w, _ := cmd.StdoutPipe()
 	go func() {
 		cmd.Start()
@@ -284,9 +287,9 @@ func filterTS(r io.ReadCloser) io.ReadCloser {
 // in aes128cbc mode. it automatically unpads the last block when
 // the reader encounters an eof condition
 func decrypt(key, iv string, r io.ReadCloser) io.ReadCloser {
-		if *nodec || key == "" {
-			return r
-		}
+	if *nodec || key == "" {
+		return r
+	}
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
