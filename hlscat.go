@@ -6,10 +6,13 @@ vlc segment.ts
 
 go run hlscat.go http://example.com/manifest.m3u8 > segment.ts
 vlc segment.ts
+
+ffmpeg -i - -c copy -fflags +shortest+genpts -max_interleave_delta 0 -flush_packets 0 -f mpegts test5.ts
 */
 package main
 
 import (
+	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/hex"
@@ -20,7 +23,9 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/as/hls"
 )
@@ -30,15 +35,42 @@ const Blocksize = 16
 var (
 	verbose = flag.Bool("v", false, "verbose output")
 	noads   = flag.Bool("noads", false, "trim away all ad breaks")
-	base    string
+	maxhttp = flag.Int("maxhttp", 256, "max http conns")
+	maxbuf  = flag.Int("maxbuf", 64*1024*1024, "max buffer size")
+	skip    = flag.Int("skip", 0, "debugging: skip this amount of segments (after any filters are applied)")
+	count   = flag.Int("count", 0, "debugging: limit the number of segments processed")
+	debug   = flag.Int("debug", 0, "debug level")
+	noinit   = flag.Bool("noinit", false, "skip init atoms")
+	nodec   = flag.Bool("nodec", false, "never decrypt anything")
+
+	recurse = flag.Bool("r", false, "recurse into media manifests if target is a master")
+	ls      = flag.Bool("ls", false, "list segments found in manifests")
+	ls2     = flag.Bool("l", false, "alias for ls")
+	abs     = flag.Bool("abs", false, "force absolute paths when listing")
+	print   = flag.Bool("print", false, "print the manifest to stderr after applying all transformations")
+
+	base string
 )
+
+func filterAD(file ...hls.File) (new []hls.File) {
+	for _, f := range file {
+		if f.IsAD() {
+			fmt.Fprintf(os.Stderr, "skipping ad break: %s\n", f.Inf.URL)
+			continue
+		}
+		new = append(new, f)
+	}
+	return
+}
 
 func main() {
 	flag.Parse()
+	if *ls2 {
+		*ls = true
+	}
 	a := flag.Args()
 	var src io.Reader
 	if len(a) > 0 {
-		println("downloading from", a[0])
 		if strings.HasPrefix(a[0], "http") {
 			src = strings.NewReader(string(download(a[0])))
 			if n := strings.LastIndex(a[0], "/"); n > 0 {
@@ -50,55 +82,215 @@ func main() {
 			src = strings.NewReader(string(d))
 		}
 	} else {
-		println("using stdin for manifest")
 		src = os.Stdin
 	}
 
-	m := hls.Media{}
-	err := m.Decode(src)
+	tags, multi, err := hls.Decode(src)
 	if err != nil {
 		panic(err)
 	}
+	if !multi {
+		m := &hls.Media{URL: a[0]}
+		err = m.DecodeTag(tags...)
+		if err != nil {
+			panic(err)
+		}
+		media(m, os.Stdout)
+		os.Exit(0)
+	}
+	m := &hls.Master{URL: a[0]}
+	err = m.DecodeTag(tags...)
+	if err != nil {
+		panic(err)
+	}
+	println("master")
+	master(m)
+
+}
+
+func master(m *hls.Master) {
+	listmaster(m, os.Stdout)
+	if *print {
+		m.Encode(os.Stdout)
+	}
+}
+
+	type Pathy interface {
+		Path(string) string
+	}
+
+func listmaster(m *hls.Master, dst io.Writer) (err error) {
+	link := m.Path("")
+	dolist := func(f Pathy) {
+		link := f.Path(link)
+		if *abs {
+			fmt.Fprintf(dst, "%s\n", link)
+		} else {
+			fmt.Fprintf(dst, "%s\n", f.Path(""))
+		}
+		if *recurse {
+			m := &hls.Media{URL: link}
+			err := m.Decode(strings.NewReader(string(download(link))))
+			if err != nil {
+				panic(err)
+			}
+			media(m, dst)
+			fmt.Fprintln(dst)
+			fmt.Fprintln(dst)
+		}
+	}
+	for i := range m.Media {
+		dolist(&m.Media[i])
+	}
+	for i := range m.Stream {
+		dolist(&m.Stream[i])
+	}
+	for i := range m.IFrame {
+		dolist(&m.IFrame[i])
+	}
+	return nil
+}
+
+func media(m *hls.Media, dst io.Writer) {
 	fmt.Fprintf(os.Stderr, "media playlist duration=%s\n", hls.Runtime(m.File...))
 
-	keyfile := ""
-	key, iv := "", ""
+	if *noads {
+		m.File = filterAD(m.File...)
+	}
+	if *skip > 0 {
+		if *skip > len(m.File) {
+			m.File = m.File[:0]
+		} else {
+			m.File = m.File[*skip:]
+		}
+	}
+	if *count > 0 {
+		if *count < len(m.File) {
+			m.File = m.File[:*count]
+		}
+	}
+
+	if *ls {
+		stat(m, dst)
+	} else {
+		cat(m, dst)
+	}
+	if *print {
+		m.Encode(os.Stderr)
+	}
+}
+
+func list(m *hls.Media, dst io.Writer) (err error) {
 	init := ""
 	for i := range m.File {
 		f := &m.File[i]
-		if *noads && f.IsAD() {
-			fmt.Fprintf(os.Stderr, "skipping ad break: %s\n", f.Inf.URL)
-			continue
-		}
-		if k := f.Key.URI; k != "" && k != keyfile {
-			// download the key but only if its unique
-			keyfile = k
-			key = string(download(k))
-		}
-		iv = f.Key.IV
-		fmt.Fprintf(os.Stderr, "key=%x iv=%q iv=%x\n", key, iv, unhex(iv))
-		if newinit := f.Init(nil).String(); newinit != "" && newinit != init {
-			fmt.Fprintf(os.Stderr, "streaming init segment: %s", newinit)
-			io.Copy(os.Stdout, stream(newinit))
+		if newinit := f.Map.URI; newinit != "" && newinit != init && !*noinit{
+			fmt.Fprintf(dst, "%s\n", printlocation(f.Map.URI))
 			init = newinit
 		}
-		io.Copy(os.Stdout, decrypt(key, iv, stream(f.Inf.URL)))
+		fmt.Fprintf(dst, "%s\n", printlocation(f.Inf.URL))
 	}
-	m.Encode(os.Stderr)
+	return nil
+}
+
+func stat(m *hls.Media, dst io.Writer) (err error) {
+	init := ""
+	t := time.Duration(0)
+	for i := range m.File {
+		f := &m.File[i]
+		if newinit := f.Map.URI; newinit != "" && newinit != init && !*noinit{
+			fmt.Fprintf(dst, "%s\n", printlocation(f.Map.URI))
+			init = newinit
+		}
+		d := f.Duration(0)
+		t += d
+		fmt.Fprintf(dst, "%s	d=%f	t=%f\n", printlocation(f.Inf.URL), d.Seconds(), t.Seconds())
+	}
+	return nil
+}
+
+func cat(m *hls.Media, dst io.Writer) (err error) {
+	defer func() {
+		if err != nil {
+			return
+		}
+		err, _ = recover().(error)
+	}()
+	outc := make(chan io.ReadCloser, *maxhttp)
+	go func() {
+		defer close(outc)
+		keyfile := ""
+		key, iv := "", ""
+		init := ""
+		for i := range m.File {
+			f := &m.File[i]
+			if k := f.Key.URI; k != "" && k != keyfile {
+				// download the key but only if its unique
+				keyfile = k
+				key = string(download(f.Key.Path(m.Path(""))))
+			}
+			iv = f.Key.IV
+			if newinit := f.Init(nil).String(); newinit != "" && newinit != init && !*noinit{
+				fmt.Fprintf(os.Stderr, "streaming init segment: %s\n", newinit)
+				if key == "" {
+					outc <- stream(newinit)
+				} else {
+					outc <- decrypt(key, iv, stream(newinit))
+				}
+				init = newinit
+			}
+			if key != "" {
+				if *debug > 1{
+				fmt.Fprintf(os.Stderr, "keyfil=%q key=%x iv=%q iv=%x\n", f.Key.Path(m.Path("")), key, iv, unhex(iv))
+				}
+				outc <- decrypt(key, iv, stream(f.Inf.URL))
+			} else {
+				outc <- stream(f.Inf.URL)
+			}
+		}
+	}()
+
+	pr, pw := io.Pipe()
+	go func(){
+		defer pw.Close()
+	for out := range outc {
+		_, err := io.Copy(pw, out)
+		if err != nil {
+			panic(err)
+		}
+		out.Close()
+	}
+	}()
+	io.Copy(dst, filterTS(io.NopCloser(bufio.NewReaderSize(pr, *maxbuf))))
+//	io.Copy(dst, filterTS(pr))
+	return
+}
+
+func filterTS(r io.ReadCloser) io.ReadCloser {
+	return r
+	s := strings.Split("ffmpeg -i - -c copy -fflags +shortest+genpts -max_interleave_delta 0 -flush_packets 0 -f mpegts -", " ")
+	cmd := exec.Command(s[0], s[1:]...)
+	cmd.Stdin = r
+	cmd.Stderr = os.Stderr
+	w, _ := cmd.StdoutPipe()
+	go func() {
+		cmd.Start()
+		cmd.Wait()
+	}()
+	return w
 }
 
 // decrypt decrypts the contents of the reader using the key and iv
 // in aes128cbc mode. it automatically unpads the last block when
 // the reader encounters an eof condition
-func decrypt(key, iv string, r io.Reader) io.Reader {
+func decrypt(key, iv string, r io.ReadCloser) io.ReadCloser {
+		if *nodec || key == "" {
+			return r
+		}
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
-		if key == "" {
-			println("nothing to decrypt, streaming as plaintext")
-			io.Copy(pw, r)
-			return
-		}
+		r := bufio.NewReader(r)
 		// the reason we make two buffers is because we need to delay
 		// writes to the pipe by 16 bytes, since only the last block is padded
 		// and we dont know when that is in a stream
@@ -111,7 +303,6 @@ func decrypt(key, iv string, r io.Reader) io.Reader {
 		}
 		lastblock := func(msg []byte) {
 			// this is the last block, so we must unpad it
-			pw.Write(msg)
 			msg, err := unpad(msg)
 			if err != nil {
 				println(err)
@@ -151,7 +342,7 @@ func decrypt(key, iv string, r io.Reader) io.Reader {
 // This function should be called in a system that applies the standard PKCS7
 // padding on the final block of the message, and it should be called AFTER
 // decryption.
-func unpad(m []byte) ([]byte, error) {
+func unpad(m []byte) (q []byte, err error) {
 	if len(m) < Blocksize {
 		panic("block too small")
 	}
@@ -186,11 +377,22 @@ func unhex(a string) (h []byte) {
 	return h[:hexlen]
 }
 
-func download(u string) []byte {
+func location(u string) string {
 	if !strings.HasPrefix(u, "http") {
 		u = base + u
 	}
-	resp, err := http.Get(u)
+	return u
+}
+
+func printlocation(u string) string {
+	if *abs {
+		return location(u)
+	}
+	return u
+}
+
+func download(u string) []byte {
+	resp, err := http.Get(location(u))
 	if err != nil {
 		panic(err)
 	}
@@ -201,15 +403,38 @@ func download(u string) []byte {
 	return data
 }
 
+var sem = make(chan bool, *maxhttp)
+
+func init() {
+	for i := 0; i < cap(sem); i++ {
+		sem <- true
+	}
+}
+
 func stream(u string) io.ReadCloser {
-	if !strings.HasPrefix(u, "http") {
-		u = base + u
+	<-sem
+	u = location(u)
+	if *debug > 0 {
+		println("start stream", u)
 	}
 	resp, err := http.Get(u)
 	if err != nil {
 		panic(err)
 	}
-	return resp.Body
+	pr, pw := io.Pipe()
+	go func() {
+		bw := bufio.NewWriterSize(pw, *maxbuf)
+		io.Copy(bw, resp.Body)
+		sem <- true
+		if *debug > 0 {
+			println("fin stream", u)
+		}
+		resp.Body.Close()
+		bw.Flush()
+		pw.Close()
+	}()
+	br := bufio.NewReaderSize(pr, *maxbuf)
+	return io.NopCloser(br)
 }
 
 func js(v any) string {
