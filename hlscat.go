@@ -41,6 +41,7 @@ var (
 	noinit   = flag.Bool("noinit", false, "skip init atoms")
 	nodec    = flag.Bool("nodec", false, "never decrypt anything")
 	nofilter = flag.Bool("nofilter", false, "never fix ts segments")
+	cbcbuf   = flag.Int("cbcbuf", 4096+16, "cbc buffer size")
 
 	recurse = flag.Bool("r", false, "recurse into media manifests if target is a master")
 	ls      = flag.Bool("ls", false, "list segments found in manifests")
@@ -63,7 +64,17 @@ func filterAD(file ...hls.File) (new []hls.File) {
 }
 
 func main() {
+	http.DefaultClient.Transport = &http.Transport{
+		ReadBufferSize:      8192,
+		DisableCompression:  true,
+		DisableKeepAlives:   false,
+		MaxIdleConnsPerHost: 25,
+		ForceAttemptHTTP2:   true,
+	}
 	flag.Parse()
+	if *cbcbuf%16 != 0 {
+		*cbcbuf = 4096 + 16 // clearly the user is unwell
+	}
 	if *ls2 {
 		*ls = true
 	}
@@ -170,7 +181,11 @@ func media(m *hls.Media, dst io.Writer) {
 	}
 
 	if *ls {
-		stat(m, dst)
+		if *abs {
+			list(m, dst)
+		} else {
+			stat(m, dst)
+		}
 	} else {
 		cat(m, dst)
 	}
@@ -213,7 +228,7 @@ func cat(m *hls.Media, dst io.Writer) (err error) {
 		if err != nil {
 			return
 		}
-		err, _ = recover().(error)
+		//err, _ = recover().(error)
 	}()
 	outc := make(chan io.ReadCloser, *maxhttp)
 	go func() {
@@ -299,7 +314,8 @@ func decrypt(key, iv string, r io.ReadCloser) io.ReadCloser {
 		// and we dont know when that is in a stream
 		//
 		// the buffers are swapped and output is delayed to detect this condition
-		tmp0, tmp1 := make([]byte, Blocksize), make([]byte, Blocksize)
+		tmp0, tmp1 := make([]byte, *cbcbuf), make([]byte, *cbcbuf)
+		//tmp0, tmp1 = make([]byte, 16), make([]byte, 16)
 		block, err := aes.NewCipher([]byte(key))
 		if err != nil {
 			panic(err)
@@ -313,7 +329,8 @@ func decrypt(key, iv string, r io.ReadCloser) io.ReadCloser {
 			pw.Write(msg)
 		}
 		cbc := cipher.NewCBCDecrypter(block, unhex(iv))
-		n, err := io.ReadAtLeast(r, tmp0, Blocksize)
+		//n, err := io.ReadAtLeast(r, tmp0, Blocksize)
+		n, err := readMod16(r, tmp0)
 		for n >= 16 {
 			msg := tmp0[:n]
 			cbc.CryptBlocks(msg, msg)
@@ -322,7 +339,8 @@ func decrypt(key, iv string, r io.ReadCloser) io.ReadCloser {
 				break
 			}
 
-			n, err = io.ReadAtLeast(r, tmp1, 16)
+			//n, err = io.ReadAtLeast(r, tmp1, 16)
+			n, err = readMod16(r, tmp1)
 			if err == nil {
 				pw.Write(msg)
 				tmp0, tmp1 = tmp1, tmp0 // swap buffers
@@ -335,6 +353,19 @@ func decrypt(key, iv string, r io.ReadCloser) io.ReadCloser {
 		}
 	}()
 	return pr
+}
+
+func readMod16(r io.Reader, p []byte) (n int, err error) {
+	if len(p)%16 != 0 {
+		panic("readMod16: p % 16 != 0 (developer error)")
+	}
+	n, err = io.ReadAtLeast(r, p[:len(p)-16], 16)
+	if need := 16 - (n % 16); need != 0 && need != 16 {
+		m := 0
+		m, err = io.ReadFull(r, p[n:n+need])
+		n += m
+	}
+	return
 }
 
 // unpad applies the PKCS7 algorithm to unpad a plaintext CBC message 'm'
