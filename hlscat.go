@@ -6,11 +6,14 @@ vlc segment.ts
 
 go run hlscat.go http://example.com/manifest.m3u8 > segment.ts
 vlc segment.ts
+
+-muxpreload 0 -muxdelay 0
 */
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/hex"
@@ -49,8 +52,28 @@ var (
 	abs     = flag.Bool("abs", false, "force absolute paths when listing")
 	print   = flag.Bool("print", false, "print the manifest to stderr after applying all transformations")
 
+	blackout = flag.Bool("blackout", false, "blackout any ad content (not working)")
+	blackoutdebug = flag.Bool("blackoutdebug", false, "blackoutdebug")
+
 	base string
+
+	proto = Info{}
 )
+
+func init() {
+	var nothing bool
+	flag.BoolVar(&nothing, "z", false, "z flags serve as a prototype for media manifests without a master; they describe codec settings")
+	flag.IntVar(&proto.Video.Height, "z.h", 540, "video width")
+	flag.IntVar(&proto.Video.Width, "z.w", 960, "video height")
+	flag.Float64Var(&proto.Video.FPS, "z.fps", 25, "frame rate")
+	flag.StringVar(&proto.Video.Codec, "z.vcodec", "h264", "video codec")
+	flag.StringVar(&proto.Video.Profile, "z.profile", "high", "video profile")
+	flag.StringVar(&proto.Video.Level, "z.level", "4", "video level")
+	flag.IntVar(&proto.Video.Bitrate.BPS, "z.vbps", 1000000, "video bitrate")
+	flag.IntVar(&proto.Audio.Bitrate, "z.abps", 192000, "audio bitrate")
+	flag.IntVar(&proto.Audio.Samplerate, "z.arate", 48000, "audio sample rate")
+	flag.IntVar(&proto.Audio.Channels, "z.channels", 2, "audio channel count")
+}
 
 func filterAD(file ...hls.File) (new []hls.File) {
 	for _, f := range file {
@@ -72,6 +95,8 @@ func main() {
 		ForceAttemptHTTP2:   true,
 	}
 	flag.Parse()
+	// p,err:=makeBlackout(*mba, *mbv, 10)
+
 	if *cbcbuf%16 != 0 {
 		*cbcbuf = 4096 + 16 // clearly the user is unwell
 	}
@@ -187,7 +212,7 @@ func media(m *hls.Media, dst io.Writer) {
 			stat(m, dst)
 		}
 	} else {
-		cat(m, dst)
+		cat(&proto, m, dst)
 	}
 	if *print {
 		m.Encode(os.Stderr)
@@ -223,13 +248,24 @@ func stat(m *hls.Media, dst io.Writer) (err error) {
 	return nil
 }
 
-func cat(m *hls.Media, dst io.Writer) (err error) {
+func cat(info *Info, m *hls.Media, dst io.Writer) (err error) {
 	defer func() {
 		if err != nil {
 			return
 		}
 		//err, _ = recover().(error)
 	}()
+	var blackstream []byte
+	if *blackout {
+		blackstream, err = makeBlackout(info, m.Target)
+		if err != nil {
+			panic(err)
+		}
+		if *blackoutdebug{
+			os.Stdout.Write(blackstream)
+			os.Exit(0)
+		}
+	}
 	outc := make(chan io.ReadCloser, *maxhttp)
 	go func() {
 		defer close(outc)
@@ -244,7 +280,8 @@ func cat(m *hls.Media, dst io.Writer) (err error) {
 				key = string(download(f.Key.Path(m.Path(""))))
 			}
 			iv = f.Key.IV
-			if newinit := f.Map.Path(m.Path("")); newinit != "" && newinit != init && !*noinit {
+			blackout := *blackout && (f.IsAD()  || (i+1)%2==0)
+			if newinit := f.Map.Path(m.Path("")); newinit != "" && newinit != init && !*noinit && !blackout{
 				fmt.Fprintf(os.Stderr, "streaming init segment: %s\n", newinit)
 				if key == "" {
 					outc <- stream(newinit)
@@ -253,7 +290,10 @@ func cat(m *hls.Media, dst io.Writer) (err error) {
 				}
 				init = newinit
 			}
-			if key != "" {
+			if blackout{
+				init = ""
+				outc <- filterFrag(io.NopCloser(bytes.NewReader(blackstream)), f.Duration(0))
+			} else if key != "" {
 				if *debug > 1 {
 					fmt.Fprintf(os.Stderr, "keyfil=%q key=%x iv=%q iv=%x\n", f.Key.Path(m.Path("")), key, iv, unhex(iv))
 				}
@@ -270,21 +310,59 @@ func cat(m *hls.Media, dst io.Writer) (err error) {
 		for out := range outc {
 			_, err := io.Copy(pw, out)
 			if err != nil {
-				panic(err)
+	//			panic(err)
 			}
 			out.Close()
 		}
 	}()
-	io.Copy(dst, filterTS(io.NopCloser(bufio.NewReaderSize(pr, *maxbuf))))
+	//_, err = io.Copy(dst, filterTS(pr))
+	_, err = io.Copy(dst, filterFrag(pr, 0))
+	if err != nil{
+		panic(err)
+	}
 	//	io.Copy(dst, filterTS(pr))
 	return
 }
 
-func filterTS(r io.ReadCloser) io.ReadCloser {
+func filterTS(r io.ReadCloser, trim time.Duration) io.ReadCloser {
 	if *nofilter {
 		return r
 	}
-	s := strings.Split("ffmpeg -hide_banner -thread_queue_size 2048 -i - -c copy -fflags +shortest+genpts -max_interleave_delta 0 -flush_packets 0 -f mpegts -", " ")
+	cmdline := "ffmpeg -hide_banner -thread_queue_size 2048 -dts_delta_threshold 1 -i - -c copy -fflags +shortest+genpts -muxpreload 0 -muxdelay 0 -max_interleave_delta 0 -flush_packets 0 -f mpegts -"
+	if trim != 0 {
+		cmdline += fmt.Sprintf("t %f -", trim.Seconds())
+	} 
+	s := strings.Split(cmdline, " ")
+	println(cmdline)
+	fmt.Fprintf(os.Stderr, "%q\n", s)
+	cmd := exec.Command(s[0], s[1:]...)
+	cmd.Stdin = r
+	if *debug > 3 {
+		cmd.Stderr = os.Stderr
+	}
+	w, _ := cmd.StdoutPipe()
+	err := cmd.Start()
+	if err != nil{
+		panic(err)
+	}
+	go func() {
+		cmd.Wait()
+	}()
+	return w
+}
+
+func bitty() string{
+	return fmt.Sprintf("-bsf setts=pts=(2.02*12880)+N*512")
+}
+
+func filterFrag(r io.ReadCloser, trim time.Duration) io.ReadCloser {
+	cmdline := "ffmpeg -hide_banner -thread_queue_size 2048 -i - -c copy -f mp4 -min_frag_duration 30000000 -movflags empty_moov+default_base_moof+skip_trailer -"
+	if trim != 0 {
+		cmdline += fmt.Sprintf("t %f %s -", trim.Seconds(), bitty())
+	} 
+	println(cmdline)
+	s := strings.Split(cmdline, " ")
+	fmt.Fprintf(os.Stderr, "%q\n", s)
 	cmd := exec.Command(s[0], s[1:]...)
 	cmd.Stdin = r
 	if *debug > 3 {
@@ -296,6 +374,78 @@ func filterTS(r io.ReadCloser) io.ReadCloser {
 		cmd.Wait()
 	}()
 	return w
+}
+
+func makeBlackout(av *Info, maxdur time.Duration) ([]byte, error) {
+	if maxdur == 0 {
+		maxdur, _ = time.ParseDuration(fmt.Sprintf("%ss", av.Dur))
+	}
+	if maxdur == 0 {
+		maxdur = 12 * time.Second
+	}
+		maxdur = 12 * time.Second
+	ff := "ffmpeg -hide_banner -v quiet "
+	iv := fmt.Sprintf("-f lavfi -i color=black:s=%dx%d:r=%f ", av.Video.Width, av.Video.Height, av.Video.FPS)
+	ia := "-f lavfi -i anullsrc "
+	ov := fmt.Sprintf("-pix_fmt yuv420p -r %f -c:v %s -video_track_timescale 12800 -g 1 -forced-idr 1 -x264opts scenecut=0:stitchable=1:repeat-headers=1:nal-hrd=cbr -profile %s -level %s -b:v %d ",
+		av.Video.FPS, av.Video.Codec, av.Video.Profile, av.Video.Level, av.Video.Bitrate.BPS)
+
+	oa := fmt.Sprintf("-c:a aac -ar %d -b:a %d -ac %d ", av.Audio.Samplerate, av.Audio.Bitrate, av.Audio.Channels)
+	om := fmt.Sprintf("-t %f -f mp4 -min_frag_duration 20000000 -movflags empty_moov+default_base_moof+skip_trailer -", maxdur.Seconds())
+	a, v := av.Audio.On(), av.Video.On()
+	if v {
+		ff += iv
+	}
+	if a {
+		ff += ia
+	}
+	if v {
+		ff += ov
+	}
+	if a {
+		ff += oa
+	}
+	ff += om
+	println(ff)
+	s := strings.Split(ff, " ")
+	cmd := exec.Command(s[0], s[1:]...)
+	cmd.Stderr = os.Stderr
+	return cmd.Output()
+}
+
+func makeBlackoutTS(av *Info, maxdur time.Duration) ([]byte, error) {
+	if maxdur == 0 {
+		maxdur, _ = time.ParseDuration(fmt.Sprintf("%ss", av.Dur))
+	}
+	if maxdur == 0 {
+		maxdur = 12 * time.Second
+	}
+	ff := "ffmpeg -hide_banner -v quiet "
+	iv := fmt.Sprintf("-f lavfi -i color=black:s=%dx%d:r=%f ", av.Video.Width, av.Video.Height, av.Video.FPS)
+	ia := "-f lavfi -i anullsrc "
+	ov := fmt.Sprintf("-pix_fmt yuv420p -r %f -c:v %s -enc_time_base 1/12800 -profile %s -level %s -b:v %d ",
+		av.Video.FPS, av.Video.Codec, av.Video.Profile, av.Video.Level, av.Video.Bitrate.BPS)
+	oa := fmt.Sprintf("-c:a aac -ar %d -b:a %d -ac %d ", av.Audio.Samplerate, av.Audio.Bitrate, av.Audio.Channels)
+	om := fmt.Sprintf("-t %f -max_interleave_delta 0 -flush_packets 0 -copyts -muxpreload 0 -muxdelay 0 -f mpegts -", maxdur.Seconds())
+	a, v := av.Audio.On(), av.Video.On()
+	if v {
+		ff += iv
+	}
+	if a {
+		ff += ia
+	}
+	if v {
+		ff += ov
+	}
+	if a {
+		ff += oa
+	}
+	ff += om
+	println(ff)
+	s := strings.Split(ff, " ")
+	cmd := exec.Command(s[0], s[1:]...)
+	cmd.Stderr = os.Stderr
+	return cmd.Output()
 }
 
 // decrypt decrypts the contents of the reader using the key and iv
@@ -324,7 +474,7 @@ func decrypt(key, iv string, r io.ReadCloser) io.ReadCloser {
 			// this is the last block, so we must unpad it
 			msg, err := unpad(msg)
 			if err != nil {
-				println(err)
+				panic(err)
 			}
 			pw.Write(msg)
 		}
