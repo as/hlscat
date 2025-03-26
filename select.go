@@ -28,7 +28,7 @@ func parseSelectExpr(s string) (ts, te time.Time) {
 	if s[i] == '+' {
 		return ts, ts.Add(parseDur(s[i+1:]))
 	}
-	if s[i] == '-' {
+	if s[i] == '-' || s[i] == ',' {
 		return ts, parseUNIX(s[i+1:])
 	}
 	panic(fmt.Sprintf("unparseable expression: %s", s))
@@ -36,7 +36,6 @@ func parseSelectExpr(s string) (ts, te time.Time) {
 
 func parseDur(s string) time.Duration {
 	s = strings.TrimSpace(s)
-	println("parseDur", s)
 	if !strings.HasSuffix(s, "s") {
 		s += "s"
 	}
@@ -45,13 +44,11 @@ func parseDur(s string) time.Duration {
 }
 func parseUNIX(s string) time.Time {
 	s = strings.TrimSpace(s)
-	println("parseUNIX", s)
 	sec := int64(0)
 	_, err := fmt.Sscan(strings.TrimSpace(s), &sec)
 	if err != nil {
 		return minTime
 	}
-	println(sec)
 	return time.Unix(sec, 0)
 }
 
@@ -106,7 +103,6 @@ func selectrange(s, e time.Time, m *hls.Media) (p, q int) {
 
 func findtime(n int, now, t time.Time, m *hls.Media) (int, time.Time) {
 	for ; n < len(m.File); n++ {
-		fmt.Fprintln(os.Stderr, n, now, t)
 		now = timeof(now, m, n)
 		if !now.Add(m.File[n].Duration(0) / 2).Before(t) {
 			break
