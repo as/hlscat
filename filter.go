@@ -27,7 +27,7 @@ func filterAD(file ...hls.File) (new []hls.File) {
 }
 
 func filterFrag(r io.ReadCloser, trim time.Duration) io.ReadCloser {
-	cmdline := "ffmpeg -hide_banner -thread_queue_size 2048 -i - -c copy -f mp4 -min_frag_duration 30000000 -movflags empty_moov+default_base_moof+skip_trailer -"
+	cmdline := "ffmpeg -loglevel trace -hide_banner -thread_queue_size 4096 -i - -c copy -f mp4 -min_frag_duration 10000000 -bsf:a aac_adtstoasc -movflags empty_moov+default_base_moof+skip_trailer -"
 	if trim != 0 {
 		cmdline += fmt.Sprintf("t %f %s -", trim.Seconds(), bitty())
 	}
@@ -51,7 +51,7 @@ func filterTS(r io.ReadCloser, trim time.Duration) io.ReadCloser {
 	if *nofilter {
 		return r
 	}
-	cmdline := "ffmpeg -hide_banner -thread_queue_size 2048 -dts_delta_threshold 1 -i - -c copy -fflags +shortest+genpts -muxpreload 0 -muxdelay 0 -max_interleave_delta 0 -flush_packets 0 -f mpegts -"
+	cmdline := "ffmpeg -hide_banner -thread_queue_size 4096 -dts_delta_threshold 1 -i - -c copy -fflags +shortest+genpts -muxpreload 0 -muxdelay 0 -max_interleave_delta 0 -flush_packets 0 -f mpegts -"
 	if trim != 0 {
 		cmdline += fmt.Sprintf("t %f -", trim.Seconds())
 	}
@@ -75,7 +75,7 @@ func filterTS(r io.ReadCloser, trim time.Duration) io.ReadCloser {
 }
 
 func filterMerge(s0, s1 io.ReadCloser) io.ReadCloser {
-	cmdline := "ffmpeg -hide_banner -thread_queue_size 4096 -i - -thread_queue_size 4096 -i /proc/self/fd/3 -c copy -map 0:v -map 1:a -bsf:a aac_adtstoasc -f mp4 -min_frag_duration 30000000 -movflags empty_moov+default_base_moof+skip_trailer -"
+	cmdline := "ffmpeg -hide_banner -thread_queue_size 4096 -i - -thread_queue_size 4096 -i /proc/self/fd/3 -c copy -map 0:v -map 1:a -bsf:a aac_adtstoasc -f mp4 -min_frag_duration 10000000 -movflags empty_moov+default_base_moof+skip_trailer -"
 	println(cmdline)
 	s := strings.Split(cmdline, " ")
 	fmt.Fprintf(os.Stderr, "%q\n", s)
