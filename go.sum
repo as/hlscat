@@ -4,5 +4,7 @@ github.com/as/hls v0.4.1 h1:Ld6gkXlixpvbbpeFqfrLkpAHcQzuU0cmmQB9cuB2bOQ=
 github.com/as/hls v0.4.1/go.mod h1:GbKsPacEZVr3fsQHfVe64bPKpDARoyIIXg40+abIBQM=
 github.com/as/hls v0.5.0 h1:NU7+zrAqzDMWuiKNYz7ycNB3EZ6iO60jtpC7P6fGOPY=
 github.com/as/hls v0.5.0/go.mod h1:GbKsPacEZVr3fsQHfVe64bPKpDARoyIIXg40+abIBQM=
+github.com/as/hls v0.5.1 h1:4KxWRDstqr0IxbYk5o0vSlIPJvJ8iBmVcQaAWILpsBg=
+github.com/as/hls v0.5.1/go.mod h1:GbKsPacEZVr3fsQHfVe64bPKpDARoyIIXg40+abIBQM=
 github.com/as/scte v0.0.2 h1:flRMSIBSbFczBwI+XnQprCQ6SFiPe0NYJC8zwxUhwNI=
 github.com/as/scte v0.0.2/go.mod h1:9YNHCb/MraFhqsQ5krFSjA5WJe9xFuZQNm4gByT5NwE=

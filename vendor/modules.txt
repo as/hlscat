@@ -1,4 +1,4 @@
-# github.com/as/hls v0.5.0
+# github.com/as/hls v0.5.1
 ## explicit; go 1.18
 github.com/as/hls
 github.com/as/hls/m3u
