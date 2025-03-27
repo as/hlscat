@@ -14,7 +14,7 @@ var minTime = time.Unix(0, 0)
 func parseSelectExpr(s string) (ts, te time.Time) {
 	s = strings.ReplaceAll(s, "(", "")
 	s = strings.ReplaceAll(s, ")", "")
-	i := strings.IndexAny(s, "-+")
+	i := strings.IndexAny(s, "-+,")
 	if i < 0 {
 		return parseUNIX(s), maxTime
 	}
