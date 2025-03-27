@@ -245,6 +245,9 @@ func cat(info *Info, m *hls.Media) (rc io.ReadCloser) {
 		masterurl := m.Path("")
 		for i := range m.File {
 			f := &m.File[i]
+			if f.Key.Method == "NONE" {
+				keyfile, key, iv = "", "", ""
+			}
 			if k := f.Key.URI; k != "" && k != keyfile {
 				// download the key but only if its unique
 				keyfile = k
@@ -291,7 +294,6 @@ func cat(info *Info, m *hls.Media) (rc io.ReadCloser) {
 
 func location(u string) string {
 	if !strings.HasPrefix(u, "http") {
-		println("location: using relative paths may lead to errors")
 		u = base + u
 	}
 	return u

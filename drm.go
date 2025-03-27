@@ -40,7 +40,11 @@ func decrypt(key, iv string, r io.ReadCloser) io.ReadCloser {
 			}
 			pw.Write(msg)
 		}
-		cbc := cipher.NewCBCDecrypter(block, unhex(iv))
+		iv := unhex(iv)
+		if len(iv) == 0 {
+			iv = make([]byte, 16)
+		}
+		cbc := cipher.NewCBCDecrypter(block, iv)
 		//n, err := io.ReadAtLeast(r, tmp0, Blocksize)
 		n, err := readMod16(r, tmp0)
 		for n >= 16 {
