@@ -87,9 +87,10 @@ func selectBest(m *hls.Master) (v *hls.Media, a *hls.Media) {
 		}
 	}
 	si := &m.Stream[best]
-	v = mediaPlaylist(si.Path(m.Path("")))
+	parent := m.Path("")
+	v = mediaPlaylist(si.Path(parent))
 	if mi := group(m, si.Audio); mi != nil {
-		return v, mediaPlaylist(mi.Path(m.Path("")))
+		return v, mediaPlaylist(mi.Path(parent))
 	}
 	return v, v
 }

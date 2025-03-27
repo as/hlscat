@@ -27,11 +27,11 @@ func filterAD(file ...hls.File) (new []hls.File) {
 }
 
 func filterFrag(r io.ReadCloser, trim time.Duration) io.ReadCloser {
-	cmdline := "ffmpeg -loglevel trace -hide_banner -thread_queue_size 4096 -i - -c copy -f mp4 -min_frag_duration 10000000 -bsf:a aac_adtstoasc -movflags empty_moov+default_base_moof+skip_trailer -"
+	cmdline := "ffmpeg -hide_banner -thread_queue_size 4096 -i - -c copy -f mp4 -min_frag_duration 10000000 -bsf:a aac_adtstoasc -movflags empty_moov+default_base_moof+skip_trailer -"
 	if trim != 0 {
 		cmdline += fmt.Sprintf("t %f %s -", trim.Seconds(), bitty())
 	}
-	println(cmdline)
+	println("filterFrag", cmdline)
 	s := strings.Split(cmdline, " ")
 	fmt.Fprintf(os.Stderr, "%q\n", s)
 	cmd := exec.Command(s[0], s[1:]...)
@@ -56,7 +56,7 @@ func filterTS(r io.ReadCloser, trim time.Duration) io.ReadCloser {
 		cmdline += fmt.Sprintf("t %f -", trim.Seconds())
 	}
 	s := strings.Split(cmdline, " ")
-	println(cmdline)
+	println("filterTS", cmdline)
 	fmt.Fprintf(os.Stderr, "%q\n", s)
 	cmd := exec.Command(s[0], s[1:]...)
 	cmd.Stdin = r
@@ -76,7 +76,7 @@ func filterTS(r io.ReadCloser, trim time.Duration) io.ReadCloser {
 
 func filterMerge(s0, s1 io.ReadCloser) io.ReadCloser {
 	cmdline := "ffmpeg -hide_banner -thread_queue_size 4096 -i - -thread_queue_size 4096 -i /proc/self/fd/3 -c copy -map 0:v -map 1:a -bsf:a aac_adtstoasc -f mp4 -min_frag_duration 10000000 -movflags empty_moov+default_base_moof+skip_trailer -"
-	println(cmdline)
+	println("filterMerge", cmdline)
 	s := strings.Split(cmdline, " ")
 	fmt.Fprintf(os.Stderr, "%q\n", s)
 	cmd := exec.Command(s[0], s[1:]...)

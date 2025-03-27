@@ -242,16 +242,17 @@ func cat(info *Info, m *hls.Media) (rc io.ReadCloser) {
 		keyfile := ""
 		key, iv := "", ""
 		init := ""
+		masterurl := m.Path("")
 		for i := range m.File {
 			f := &m.File[i]
 			if k := f.Key.URI; k != "" && k != keyfile {
 				// download the key but only if its unique
 				keyfile = k
-				key = string(download(f.Key.Path(m.Path(""))))
+				key = string(download(f.Key.Path(masterurl)))
 			}
 			iv = f.Key.IV
 			blackout := *blackout && (f.IsAD() || (i+1)%2 == 0)
-			if newinit := f.Map.Path(m.Path("")); newinit != "" && newinit != init && !*noinit && !blackout {
+			if newinit := f.Map.Path(masterurl); newinit != "" && newinit != init && !*noinit && !blackout {
 				fmt.Fprintf(os.Stderr, "streaming init segment: %s\n", newinit)
 				if key == "" {
 					outc <- stream(newinit)
@@ -265,11 +266,11 @@ func cat(info *Info, m *hls.Media) (rc io.ReadCloser) {
 				outc <- filterFrag(io.NopCloser(bytes.NewReader(blackstream)), f.Duration(0))
 			} else if key != "" {
 				if *debug > 1 {
-					fmt.Fprintf(os.Stderr, "keyfil=%q key=%x iv=%q iv=%x\n", f.Key.Path(m.Path("")), key, iv, unhex(iv))
+					fmt.Fprintf(os.Stderr, "keyfil=%q key=%x iv=%q iv=%x\n", f.Key.Path(masterurl), key, iv, unhex(iv))
 				}
-				outc <- decrypt(key, iv, stream(f.Inf.URL))
+				outc <- decrypt(key, iv, stream(f.Path(masterurl)))
 			} else {
-				outc <- stream(f.Inf.URL)
+				outc <- stream(f.Path(masterurl))
 			}
 		}
 	}()
@@ -290,6 +291,7 @@ func cat(info *Info, m *hls.Media) (rc io.ReadCloser) {
 
 func location(u string) string {
 	if !strings.HasPrefix(u, "http") {
+		println("location: using relative paths may lead to errors")
 		u = base + u
 	}
 	return u
