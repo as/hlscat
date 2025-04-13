@@ -6,6 +6,18 @@ It handles `mpegts` segments and fragmented mp4s, as well as clearkey encryption
 
 `hlscat` has two primary functions: Listing and Repackaging.
 
+## Feature Matrix
+
+|FEATURE	|SUPPORT	|COMMENT	|	
+| ------------- | ------------- |------------- |
+|mpegts 	|x|	mpeg ts segments as input	|		
+|fmp4 	|x|	fragmented mp4 with init files			|
+|ad removal	|x|	remove segments that have a EXT-X-CUE tag	|		
+|late bound audio	|x|	video and audio are in seperate files/containers	|		
+|stateless*	|x|	does not use any temporary files on disk or memory for repackaging	|		
+|drm (clearkey aes128 cbc)	|x|	sample aes128cbc encryption where the key is available via endpoint|			
+|drm (sample)|		|hardware drm, widevine, playready, fairplay			|
+
 ## Listing
 
 A master or media manifest can be listed with `hlscat`. 
